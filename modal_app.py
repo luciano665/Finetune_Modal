@@ -1,3 +1,4 @@
+from pdb import run
 import modal
 
 # Define Modal app
@@ -15,18 +16,60 @@ finetune_image = (
     # CUDA 12.1 wheels from official index
     .run("pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio")
     .pip_install(
-        "unsloth",
-        "transformers>=4.43",
-        "datasets>=2.19.0",
-        "peft>=0.11.0",
-        "trl>=0.22.0",
-        "accelerate>=0.33.0",
-        "bitsandbytes>=0.43.0",
-        "sentencepiece",
-        "einops",
-        "huggingface_hub",
+    "unsloth==2024.9.0",
+    "transformers==4.43.3",
+    "datasets==2.19.1",
+    "peft==0.11.1",
+    "trl==0.11.4",
+    "accelerate==0.33.0",
+    "bitsandbytes==0.43.1",
+    "huggingface_hub==0.23.4",
+    "sentencepiece==0.2.0",
+    "einops==0.8.0",
+    "xformers==0.0.27.post2",
+)
 
-    )
 )
 
 GPU_TYPE = "T4"
+
+# Training function
+@app.function(image=finetune_image, gpu=GPU_TYPE, timeout=60*60, volumes={"/vol": vol})
+def train(
+    # Model and dataset
+    model: str = "unsloth/Llama-3.2-1B-Instruct",
+    dataset: str = "trl-lib/Capybara",
+    dataset_split: str = "train[:4000]", # 4000 samples for demo
+    # Training parameters
+    out_dir: str = "outputs/llama32-qlora",
+    max_steps: int = 300,
+    seq_len: int = 2048,
+    per_device_batch: int = 2,
+    grad_accum: int = 4,
+    learning_rate: float = 2e-4,
+    packing: bool = True,
+    gradient_checkpointing: bool = True,
+    # QloRA
+    qlora: bool = True,
+    lora_r: int = 16,
+    lora_alpha: int = 16,
+    lora_dropout: float = 0.0,
+):
+
+    # IMPORTS for container
+    import json
+    import torch
+    import datasets as ds_lib
+    import transformers
+    import bitsandbytes as bnb
+    import peft
+    import trl
+    from datasets import load_dataset
+    from unsloth import FastLanguageModel
+    from trl import SFTTrainer, SFTConfig
+
+
+    # Save under the volume so it persists
+    work_root = "/vol"
+    run_dir = os.path.join(work_root, out_dir)
+    os.makedirs(run_dir, exist_ok=True)
