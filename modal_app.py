@@ -42,6 +42,49 @@ finetune_image = (
 
 GPU_TYPE = "T4"
 
+# Utility function for dataset text formatting
+def build_text_formatter(dataset_features):
+    """
+    - Returns a function that maps a raw example to a text string.
+    - Order of priority:
+        1) ('prompt', 'response')      -> "### Instruction ... ### Response ..."
+        2) ('instruction', 'output')   -> similar template
+        3) ('chosen')                  -> preference datasets
+        4) ('text')                    -> already combined
+        5) fallback: concat string-like fields line-by-line
+    """
+    keys = set(dataset_features)
+
+    if {"prompt", "response"}.issubset(keys):
+        def formatter(x):
+            return f"### Instruction:\n{x['prompt']}\n\n### Response:\n{x['response']}"
+        return formatter
+    
+    if {"instruction", "output"}.issubset(keys):
+        def formatter(x):
+            return f"### Instruction:\n{x['instruction']}\n\n### Response:\n{x['output']}"
+        return formatter
+    
+    if "chosen" in keys:
+        def formatter(x):
+            return x["chosen"]
+        return formatter
+    
+    if "text" in keys:
+        def formatter(x):
+            return x["text"]
+        return formatter
+    
+    # Fallback -> concat string-like fields line-by-line
+    str_like = [k for k in dataset_features if k not in {"__index__level_0"}]
+    def formatter(x):
+        parts = []
+        for k in str_like:
+            v = x.get(k)
+            if isinstance(v, str) and v.strip():
+                parts.append(f"{k}: {v}")
+            return"\n".join(parts)
+    return formatter
 # Training function
 @app.function(image=finetune_image, gpu=GPU_TYPE, timeout=60*60, volumes={"/vol": vol})
 def train(
