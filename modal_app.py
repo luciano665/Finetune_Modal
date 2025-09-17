@@ -98,4 +98,15 @@ def train(
     print("HF caches:")
     for k in ["HF_HOME", "HF_DATASETS_CACHE", "HF_HUB_CACHE", "TRANSFORMERS_CACHE"]:
         print(f"  {k} = {os.environ.get(k)}")
-
+    
+    # GPU test
+    if torch.cuda.is_available():
+        x = torch.randn(1024, 1024, device="cuda")
+        y = x @ x.T
+        print("GPU matmul OK (mean):", float(y.mean()))
+    
+    # Load dataset with auto-download and cache
+    print(f"\n=== LOADIND DATASET: {dataset} [{dataset_split}] ===")
+    raw = load_dataset(dataset, split=dataset_split)
+    print("Sample features:", raw.features)
+    print("Sample row 0 keys:", list(raw[0].keys()))
