@@ -108,6 +108,12 @@ def train(
     lora_dropout: float = 0.0,
 ):
 
+    """
+    Runs inside the Modal container (with GPU). Pulls dataset from HF,
+    formats it into a 'text' field, loads the base model in 4-bit if QLoRA,
+    applies LoRA, and trains with TRL's SFTTrainer.
+    """
+
     # IMPORTS for container
     import json
     import torch
@@ -153,3 +159,16 @@ def train(
     raw = load_dataset(dataset, split=dataset_split)
     print("Sample features:", raw.features)
     print("Sample row 0 keys:", list(raw[0].keys()))
+    
+    # Formatter and mapping to simple text format
+    formatter = build_text_formatter(raw.features)
+    def map_to_text(ex):
+        return {"text": formatter(ex)}
+    
+    ds_proccesed = row.map(map_to_text, remove_volumns=[c for c in raw.features if c != "text"])
+    ds_proccesed = ds_proccesed.filter(lambda x: isinstance(x["text"], str) and len(x["text"]) > 0)
+
+    print("\n=== Prev formatted record ===")
+    print(json.dumps(ds_proccesed[0], indent=2)[:1000])
+
+    # Load base model with unsloth (4-bt for QLoRA)
