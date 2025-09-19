@@ -1,4 +1,4 @@
-from pdb import run
+
 import modal
 
 # Define Modal app
@@ -116,6 +116,7 @@ def train(
 
     # IMPORTS for container
     import json
+    import os
     import torch
     import datasets as ds_lib
     import transformers
@@ -165,10 +166,17 @@ def train(
     def map_to_text(ex):
         return {"text": formatter(ex)}
     
-    ds_proccesed = row.map(map_to_text, remove_volumns=[c for c in raw.features if c != "text"])
+    ds_proccesed = raw.map(map_to_text, remove_volumns=[c for c in raw.features if c != "text"])
     ds_proccesed = ds_proccesed.filter(lambda x: isinstance(x["text"], str) and len(x["text"]) > 0)
 
     print("\n=== Prev formatted record ===")
     print(json.dumps(ds_proccesed[0], indent=2)[:1000])
 
     # Load base model with unsloth (4-bt for QLoRA)
+    print(f"\n=== LOADING MODEL: {model}  {f"QLoRA={qlora}"}===")
+    model_obj, tokenizer = FastLanguageModel.from_pretrained(
+        model_name=model,
+        max_seq_len=seq_len,
+        load_in_4bit=qlora, # 4-bit base weights when QLoRA
+        dtype=None,
+    )
