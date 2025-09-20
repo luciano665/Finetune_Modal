@@ -1,4 +1,5 @@
 
+from audioop import bias
 import modal
 
 # Define Modal app
@@ -179,4 +180,34 @@ def train(
         max_seq_len=seq_len,
         load_in_4bit=qlora, # 4-bit base weights when QLoRA
         dtype=None,
+    )
+
+    # Apply LoRA
+    model_obj = FastLanguageModel.get_peft_model(
+        model_obj,
+        r=lora_r,  # Controll the size of the LoRA matrix
+        lora_alpha=lora_alpha,
+        lora_dropout=lora_dropout,
+        bias="none",
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+        use_gradient_checkpointing=gradient_checkpointing,
+    )
+
+    # Set up of training using TRL SFT
+    sft_args = SFTConfig(
+        output_dir=out_dir,
+        max_steps=max_steps,
+        per_device_train_batch_size=per_device_batch,
+        gradient_accumulation_steps=grad_accum,
+        learning_rate=learning_rate,
+        logging_steps=10,
+        save_steps=100,            # save periodically (tune as needed)
+        save_total_limit=2,        # keep last 2 checkpoints
+        evaluation_strategy="no",  # add a val split + steps if you want eval
+        fp16=True,
+        bf16=False,
+        packing=packing,
+        lr_scheduler_type="cosine",
+        warmup_ratio=0.03,
+        weight_decay=0.0,
     )
