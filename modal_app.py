@@ -211,3 +211,26 @@ def train(
         warmup_ratio=0.03,
         weight_decay=0.0,
     )
+
+    trianer = SFTTrainer(
+        model=model_obj,
+        tokenizer=tokenizer,
+        train_dataset=ds_proccesed,
+        args=sft_args,
+        dataset_text_field="text",
+        max_seq_length=seq_len,
+    )
+
+    print(f"\n=== STARTING TRAINING  ===")
+    trianer.train()
+
+    # Save adapters and tokenizer
+    print("\n=== Saving LoRA adapters & tokenizer ===")
+    try:
+        from unsloth import save_pretrained_lora
+        save_pretrained_lora(model_obj, run_dir)
+    except Exception:
+        model_obj.save_pretrained(run_dir)  # fallback: PEFT save
+    tokenizer.save_pretrained(run_dir)
+
+    print(f"\n✅ Done! Artifacts saved to: {run_dir}")
