@@ -1,5 +1,3 @@
-
-from audioop import bias
 import modal
 
 # Define Modal app
@@ -9,37 +7,71 @@ app = modal.App(name="finetune-sft-unsloth")
 VOLUME_NAME = "unsloth-artifacts"
 vol = modal.Volume.from_name(VOLUME_NAME, create_if_missing=True)
 
-# Base image with CUDA torch + tooling
+# MODAL image build commands for all necessary dependencies
+# Torch first (T4-friendly CUDA 12.1); no vision/audio
 finetune_image = (
     modal.Image.debian_slim()
-    .run("apt-get update && apt-get install -y git && rm -rf /var/lib/apt/lists/*")
-    .run("python -m pip install --upgrade pip")
-    # CUDA 12.1 wheels from official index
-    .run("pip install --index-url https://download.pytorch.org/whl/cu121 torch torchvision torchaudio")
-    .pip_install(
-        "unsloth==2024.9.0",
-        "transformers==4.43.3",
-        "datasets==2.19.1",
-        "peft==0.11.1",
-        "trl==0.11.4",
-        "accelerate==0.33.0",
-        "bitsandbytes==0.43.1",
-        "huggingface_hub==0.23.4",
-        "sentencepiece==0.2.0",
-        "einops==0.8.0",
-        "xformers==0.0.27.post2",
+    .apt_install("git")
+    .env({"PIP_INDEX_URL": "https://pypi.org/simple"})
+    .run_commands("python -m pip install --upgrade pip")
+
+    # 1) Torch first (CUDA build), no vision/audio
+    .run_commands(
+        "pip install --index-url https://download.pytorch.org/whl/cu124 "
+        "torch==2.6.0 --upgrade --no-deps"
     )
 
-    # Cache all HF artifacts to a mounted volume for persistence
+    # 2) Core HF stack (pins that won’t fight PEFT later)
+    .pip_install(
+        "transformers==4.55.4",
+        "tokenizers==0.21.4",
+        "datasets==3.6.0",
+        "fsspec[http]>=2023.1.0,<=2025.3.0",
+        "accelerate==1.10.1",
+        "huggingface_hub==0.35.0",
+        "safetensors==0.6.2",
+    )
+
+    # 3) Training extras (no torch/transformers pins here)
+    .pip_install(
+        "bitsandbytes==0.47.0",
+        "xformers==0.0.27.post2",
+        "sentencepiece==0.2.0",
+        "einops==0.8.0",
+        "pillow==10.4.0",
+    )
+
+    # 4) Make sure torchao isn't around (avoids torch.int1 crash)
+    .run_commands("pip uninstall -y torchao || true")
+
+    # 5) TRL to a version Unsloth-Zoo supports on your mirror
+    .run_commands("python -m pip install --upgrade --no-cache-dir trl==0.23.0")
+
+    # 6) Unsloth + Zoo (same version) WITHOUT pulling extra deps
+    .run_commands("pip uninstall -y unsloth unsloth_zoo || true")
+    .run_commands(
+        "pip install --no-cache-dir --force-reinstall --no-deps "
+        "unsloth unsloth_zoo"
+    )
+
+    # 7) Finally, PEFT from git --no-deps so it can’t drag a different transformers
+    .run_commands("pip install --no-deps --upgrade 'peft @ git+https://github.com/huggingface/peft.git'")
+
+    # 8) Prevent Transformers from importing torchvision
+    .env({"TRANSFORMERS_NO_TORCHVISION": "1"})
+
+    # 9) Caches & misc
     .env({
         "HF_HOME": "/vol/hf",
         "HF_DATASETS_CACHE": "/vol/hf/datasets",
         "HF_HUB_CACHE": "/vol/hf/hub",
         "TRANSFORMERS_CACHE": "/vol/hf/transformers",
-        "BITSANDBYTES_NOWELCOME": "1",   
-        "WANDB_MODE": "disabled",        
+        "BITSANDBYTES_NOWELCOME": "1",
+        "WANDB_MODE": "disabled",
     })
 )
+
+
 
 GPU_TYPE = "T4"
 
@@ -84,7 +116,7 @@ def build_text_formatter(dataset_features):
             v = x.get(k)
             if isinstance(v, str) and v.strip():
                 parts.append(f"{k}: {v}")
-            return"\n".join(parts)
+        return "\n".join(parts)
     return formatter
 # Training function
 @app.function(image=finetune_image, gpu=GPU_TYPE, timeout=60*60, volumes={"/vol": vol})
@@ -119,13 +151,12 @@ def train(
     import json
     import os
     import torch
+    from unsloth import FastLanguageModel
     import datasets as ds_lib
     import transformers
     import bitsandbytes as bnb
-    import peft
     import trl
     from datasets import load_dataset
-    from unsloth import FastLanguageModel
     from trl import SFTTrainer, SFTConfig
 
 
@@ -143,7 +174,6 @@ def train(
     print("torch:", torch.__version__)
     print("transformers:", transformers.__version__)
     print("datasets:", ds_lib.__version__)
-    print("peft:", peft.__version__)
     print("trl:", trl.__version__)
     print("bitsandbytes:", bnb.__version__)
     print("HF caches:")
@@ -157,7 +187,7 @@ def train(
         print("GPU matmul OK (mean):", float(y.mean()))
     
     # Load dataset with auto-download and cache
-    print(f"\n=== LOADIND DATASET: {dataset} [{dataset_split}] ===")
+    print(f"\n=== LOADING DATASET: {dataset} [{dataset_split}] ===")
     raw = load_dataset(dataset, split=dataset_split)
     print("Sample features:", raw.features)
     print("Sample row 0 keys:", list(raw[0].keys()))
@@ -167,17 +197,17 @@ def train(
     def map_to_text(ex):
         return {"text": formatter(ex)}
     
-    ds_proccesed = raw.map(map_to_text, remove_volumns=[c for c in raw.features if c != "text"])
+    ds_proccesed = raw.map(map_to_text, remove_columns=[c for c in raw.column_names if c != "text"])
     ds_proccesed = ds_proccesed.filter(lambda x: isinstance(x["text"], str) and len(x["text"]) > 0)
 
     print("\n=== Prev formatted record ===")
     print(json.dumps(ds_proccesed[0], indent=2)[:1000])
 
     # Load base model with unsloth (4-bt for QLoRA)
-    print(f"\n=== LOADING MODEL: {model}  {f"QLoRA={qlora}"}===")
+    print(f"\n=== LOADING MODEL: {model}  (QLoRA={qlora})===")
     model_obj, tokenizer = FastLanguageModel.from_pretrained(
         model_name=model,
-        max_seq_len=seq_len,
+        max_seq_length=seq_len,
         load_in_4bit=qlora, # 4-bit base weights when QLoRA
         dtype=None,
     )
@@ -195,7 +225,7 @@ def train(
 
     # Set up of training using TRL SFT
     sft_args = SFTConfig(
-        output_dir=out_dir,
+        output_dir=run_dir,
         max_steps=max_steps,
         per_device_train_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum,
@@ -203,7 +233,7 @@ def train(
         logging_steps=10,
         save_steps=100,            # save periodically (tune as needed)
         save_total_limit=2,        # keep last 2 checkpoints
-        evaluation_strategy="no",  # add a val split + steps if you want eval
+       
         fp16=True,
         bf16=False,
         packing=packing,
@@ -212,7 +242,7 @@ def train(
         weight_decay=0.0,
     )
 
-    trianer = SFTTrainer(
+    trainer = SFTTrainer(
         model=model_obj,
         tokenizer=tokenizer,
         train_dataset=ds_proccesed,
@@ -222,7 +252,7 @@ def train(
     )
 
     print(f"\n=== STARTING TRAINING  ===")
-    trianer.train()
+    trainer.train()
 
     # Save adapters and tokenizer
     print("\n=== Saving LoRA adapters & tokenizer ===")
@@ -234,3 +264,25 @@ def train(
     tokenizer.save_pretrained(run_dir)
 
     print(f"\n✅ Done! Artifacts saved to: {run_dir}")
+
+# Local entry point
+# modal run modal_app.py::main
+@app.local_entrypoint()
+def main():
+    train.remote(
+        model="unsloth/Llama-3.2-1B-Instruct",
+        dataset="trl-lib/Capybara",
+        dataset_split="train[:4000]",
+        out_dir="outputs/llama32-qlora",
+        max_steps=300,
+        seq_len=2048,
+        per_device_batch=2,
+        grad_accum=4,
+        learning_rate=2e-4,
+        packing=True,
+        gradient_checkpointing=True,
+        qlora=True,
+        lora_r=16,
+        lora_alpha=16,
+        lora_dropout=0.0,
+    )
