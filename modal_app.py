@@ -67,6 +67,8 @@ finetune_image = (
         "HF_HUB_CACHE": "/vol/hf/hub",
         "TRANSFORMERS_CACHE": "/vol/hf/transformers",
         "BITSANDBYTES_NOWELCOME": "1",
+        "TORCHDYNAMO_DISABLE": "1",        
+        "UNSLOTH_DISABLE_FUSED_CE": "1",    
         "WANDB_MODE": "disabled",
     })
 )
@@ -132,7 +134,7 @@ def train(
     per_device_batch: int = 2,
     grad_accum: int = 4,
     learning_rate: float = 2e-4,
-    packing: bool = True,
+    packing: bool = False,
     gradient_checkpointing: bool = True,
     # QloRA
     qlora: bool = True,
@@ -226,6 +228,7 @@ def train(
     # Set up of training using TRL SFT
     sft_args = SFTConfig(
         output_dir=run_dir,
+        packing=packing,
         max_steps=max_steps,
         per_device_train_batch_size=per_device_batch,
         gradient_accumulation_steps=grad_accum,
@@ -233,10 +236,8 @@ def train(
         logging_steps=10,
         save_steps=100,            # save periodically (tune as needed)
         save_total_limit=2,        # keep last 2 checkpoints
-       
         fp16=True,
         bf16=False,
-        packing=packing,
         lr_scheduler_type="cosine",
         warmup_ratio=0.03,
         weight_decay=0.0,
