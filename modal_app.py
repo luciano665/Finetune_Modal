@@ -130,7 +130,7 @@ def train(
     # Training parameters
     out_dir: str = "outputs/llama32-qlora",
     max_steps: int = 300,
-    seq_len: int = 2048,
+    seq_len: int = 8192,
     per_device_batch: int = 2,
     grad_accum: int = 4,
     learning_rate: float = 2e-4,
@@ -276,7 +276,7 @@ def main():
         dataset_split="train[:4000]",
         out_dir="outputs/llama32-qlora",
         max_steps=300,
-        seq_len=2048,
+        seq_len=8192,
         per_device_batch=2,
         grad_accum=4,
         learning_rate=2e-4,
